@@ -1,0 +1,224 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+struct DreamFocuserCommand
+{
+    char M = 'M';
+    char k;
+    unsigned char a;
+    unsigned char b;
+    unsigned char c;
+    unsigned char d;
+    unsigned char addr = '\0';
+    unsigned char z;
+};
+
+int focusPosition = 30000;
+int curTemp = 20;
+int curHumidity = 50;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.setTimeout(2000);
+
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  }
+}
+
+unsigned char calcChecksum(DreamFocuserCommand *cmd) {
+    unsigned char z;
+
+    // calculate checksum
+    z = (cmd->M + cmd->k + cmd->a + cmd->b + cmd->c + cmd->d + cmd->addr) & 0xff;
+    return z;
+}
+
+void returnLong(long num, DreamFocuserCommand *cmd) {
+  long dig = num;
+  cmd->d = (char)(dig & 0xff);
+  dig = dig >> 8;
+  cmd->c = (char)(dig & 0xff);
+  dig = dig >> 8;
+  cmd->b = (char)(dig & 0xff);
+  dig = dig >> 8;
+  cmd->a = (char)(dig & 0xff);
+}
+
+void isCalibrated(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("isCalibrated");
+  ret.a = '\0';
+  ret.b = '\0';
+  ret.c = '\0';
+  ret.d = '\0';
+  ret.addr = '\0';
+  ret.k = 'W';
+
+  ret.z = calcChecksum(&ret);
+  Serial.write((char *)&ret,8);
+}
+
+void isMoving(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("isMoving");
+  ret.a = '\0';
+  ret.b = '\0';
+  ret.c = '\0';
+  ret.d = '\0';
+  ret.addr = '\0';
+  ret.k = 'I';
+
+  ret.z = calcChecksum(&ret);
+  Serial.write((char *)&ret,8);
+}
+
+void getPosition(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("getPosition");
+  int dig = focusPosition;
+  ret.d = (unsigned char)(dig & 0xff);
+  dig = dig >> 8;
+  ret.c = (unsigned char)(dig & 0xff);
+  dig = dig >> 8;
+  ret.b = (unsigned char)(dig & 0xff);
+  dig = dig >> 8;
+  ret.a = (unsigned char)(dig & 0xff);
+  ret.addr = '\0';
+  ret.k = 'P';
+
+  ret.z = calcChecksum(&ret);
+  Serial.write((char *)&ret,8);
+}
+
+void readMemory(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("readMemory");
+  if (cmd->addr == 3) {
+    returnLong(65535,&ret);
+  } else {
+    returnLong(0,&ret);
+  }
+  ret.k = 'A';
+  ret.addr = 0;
+  ret.z = calcChecksum(&ret);
+  Serial.write((char *)&ret,8);
+
+}
+
+void getTemperature(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("getTemperature");
+  long retHumidity = curHumidity * 10;
+  retHumidity = retHumidity << 16;
+  long retTemp = curTemp * 10;
+  returnLong(retHumidity + retTemp,&ret);
+  ret.k = 'T';
+  ret.addr = 0;
+  ret.z = calcChecksum(&ret);
+  Serial.write((char *)&ret,8);
+
+}
+
+
+void processCommand(DreamFocuserCommand *cmd) {
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.write(cmd->k);
+  switch(cmd->k) 
+  {
+  case 'M': 
+    /* MMabcd0z - set position x
+      response - MMabcd0z */
+    break;
+  case 'H': 
+    /* MH00000z - stop
+      response - MH00000z */
+    break;
+  case 'P': 
+    /* MP00000z - read position
+      response - MPabcd0z  */
+    getPosition(cmd);
+    break;
+  case 'I':
+    /* MI00000z - is moving
+      response - MI000d0z - d = 1: yes, 0: no */
+    isMoving(cmd);
+    break;
+  case 'T':
+    getTemperature(cmd);
+    /* MT00000z - read temperature
+      response - MT00cd0z - temperature = ((c<<8)|d)/16.0 */
+    break;
+  case 'A':
+    readMemory(cmd);
+    /* MA0000nz - read memory dword - n = address
+      response - MAabcd0z(?) */
+    break;
+  case 'B':
+    /* MBabcdnz - write memory dword - abcd = content, n = address
+      response - MBabcd0z(?) */
+    break;
+  case 'C':
+    /* MC0000nz - read memory word - n = address
+      response - */
+    break;
+  case 'D':
+    /* MDab00nz - write memory word - ab = content, n = address
+      response - */
+    break;
+  case 'R':
+    /* MR000d0z - move with speed d & 0b1111111 (0 - 127), direction d >> 7 (1 up, 0 down)
+      response - MR000d0z - */
+    break;
+  case 'W':
+    isCalibrated(cmd);
+    /* MW00000z - is calibrated
+      response - MW000d0z - d = 1: yes (absolute mode), 0: no (relative mode) */
+    break;
+  case 'Z':
+    /* MZabcd0z - calibrate toposition x
+      response - MZabcd0z */
+    break;
+  case 'G':
+    /* MG00000z - park
+      response - MG00000z */
+    break;
+
+  default:
+    break;
+  }
+  display.display();
+}
+
+void loop() {
+  DreamFocuserCommand cmd;
+  char printBuf[10];
+
+  // Check if any data is available in the serial receive buffer
+  if (Serial.available() >0) {
+    display.clearDisplay();
+    int read = Serial.readBytes((char *)&cmd,sizeof(DreamFocuserCommand));
+    display.setCursor(0,10);
+    display.print(itoa(read,printBuf,10));
+    if (read == 8) {
+      processCommand(&cmd);
+    }
+  }
+  display.display();
+}
