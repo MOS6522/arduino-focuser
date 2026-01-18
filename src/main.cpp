@@ -28,12 +28,12 @@ int curTemp = 20;
 int curHumidity = 50;
 bool running = false;
 
-#define DIR_PIN 5
+#define DIR_PIN 2
 #define STEP_PIN 4
 #define MOTOR_INTERFACE 1
 #define MS1 10
 #define MS2 11
-#define MS3 12
+#define MS3 14
 #define START_POSITION 30000
 
 AccelStepper accelStepper(MOTOR_INTERFACE, STEP_PIN, DIR_PIN);
@@ -155,7 +155,7 @@ void readMemory(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
   display.setCursor(0,20);
   display.print("readMemory");
-  if (cmd->addr == 3) {
+  if (cmd->addr == 3) { // Max Position
     returnLong(65535,&ret);
   } else {
     returnLong(0,&ret);
