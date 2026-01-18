@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <AccelStepper.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -22,14 +23,39 @@ struct DreamFocuserCommand
     unsigned char z;
 };
 
-int focusPosition = 30000;
+// registers
 int curTemp = 20;
 int curHumidity = 50;
+bool running = false;
+
+#define DIR_PIN 5
+#define STEP_PIN 4
+#define MOTOR_INTERFACE 1
+#define MS1 10
+#define MS2 11
+#define MS3 12
+#define START_POSITION 30000
+
+AccelStepper accelStepper(MOTOR_INTERFACE, STEP_PIN, DIR_PIN);
 
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(2000);
 
+  pinMode(MS1, OUTPUT);
+  pinMode(MS2, OUTPUT);
+  pinMode(MS3, OUTPUT);
+
+  digitalWrite(MS1, LOW);
+  digitalWrite(MS2, LOW);
+  digitalWrite(MS3, LOW);
+
+  
+  accelStepper.setMaxSpeed(1000);
+  accelStepper.setAcceleration(50);
+  accelStepper.setSpeed(200);
+  accelStepper.setCurrentPosition(START_POSITION);
+  
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -55,6 +81,20 @@ void returnLong(long num, DreamFocuserCommand *cmd) {
   cmd->a = (char)(dig & 0xff);
 }
 
+long readLong(DreamFocuserCommand *cmd) {
+  long ret = 0;
+
+  ret = ret | cmd->a;
+  ret = ret << 8;
+  ret = ret | cmd->b;
+  ret = ret << 8;
+  ret = ret | cmd->c;
+  ret = ret << 8;
+  ret = ret | cmd->d;
+
+  return ret;
+}
+
 void isCalibrated(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
   display.setCursor(0,20);
@@ -71,13 +111,20 @@ void isCalibrated(DreamFocuserCommand *cmd) {
 }
 
 void isMoving(DreamFocuserCommand *cmd) {
+  running = accelStepper.isRunning();
+
   DreamFocuserCommand ret;
   display.setCursor(0,20);
   display.print("isMoving");
   ret.a = '\0';
   ret.b = '\0';
   ret.c = '\0';
-  ret.d = '\0';
+  if (running) {
+    ret.d = '\1';
+
+  } else {
+    ret.d = '\0';
+  }
   ret.addr = '\0';
   ret.k = 'I';
 
@@ -89,7 +136,7 @@ void getPosition(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
   display.setCursor(0,20);
   display.print("getPosition");
-  int dig = focusPosition;
+  int dig = accelStepper.currentPosition();
   ret.d = (unsigned char)(dig & 0xff);
   dig = dig >> 8;
   ret.c = (unsigned char)(dig & 0xff);
@@ -135,6 +182,28 @@ void getTemperature(DreamFocuserCommand *cmd) {
 
 }
 
+void move(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("move");
+
+  long position = readLong(cmd);
+  accelStepper.moveTo(position);
+
+  Serial.write((char *)cmd,8);
+
+}
+
+void stop(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  display.setCursor(0,20);
+  display.print("stop");
+
+  accelStepper.stop();
+
+  Serial.write((char *)cmd,8);
+
+}
 
 void processCommand(DreamFocuserCommand *cmd) {
   display.setTextColor(SSD1306_WHITE);
@@ -145,10 +214,12 @@ void processCommand(DreamFocuserCommand *cmd) {
   case 'M': 
     /* MMabcd0z - set position x
       response - MMabcd0z */
+    move(cmd);
     break;
   case 'H': 
     /* MH00000z - stop
       response - MH00000z */
+    stop(cmd);
     break;
   case 'P': 
     /* MP00000z - read position
