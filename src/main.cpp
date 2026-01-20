@@ -23,11 +23,6 @@ struct DreamFocuserCommand
     unsigned char z;
 };
 
-// registers
-int curTemp = 20;
-int curHumidity = 50;
-bool running = false;
-
 #define DIR_PIN 2
 #define STEP_PIN 4
 #define MOTOR_INTERFACE 1
@@ -35,6 +30,12 @@ bool running = false;
 #define MS2 11
 #define MS3 14
 #define START_POSITION 30000
+
+// registers
+int curTemp = 20;
+int curHumidity = 50;
+bool running = false;
+long destPos = START_POSITION;
 
 AccelStepper accelStepper(MOTOR_INTERFACE, STEP_PIN, DIR_PIN);
 
@@ -97,8 +98,6 @@ long readLong(DreamFocuserCommand *cmd) {
 
 void isCalibrated(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("isCalibrated");
   ret.a = '\0';
   ret.b = '\0';
   ret.c = '\0';
@@ -114,8 +113,6 @@ void isMoving(DreamFocuserCommand *cmd) {
   running = accelStepper.isRunning();
 
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("isMoving");
   ret.a = '\0';
   ret.b = '\0';
   ret.c = '\0';
@@ -134,9 +131,7 @@ void isMoving(DreamFocuserCommand *cmd) {
 
 void getPosition(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("getPosition");
-  int dig = accelStepper.currentPosition();
+  long dig = accelStepper.currentPosition();
   ret.d = (unsigned char)(dig & 0xff);
   dig = dig >> 8;
   ret.c = (unsigned char)(dig & 0xff);
@@ -147,14 +142,16 @@ void getPosition(DreamFocuserCommand *cmd) {
   ret.addr = '\0';
   ret.k = 'P';
 
+  if (!accelStepper.isRunning()) {
+    destPos = dig;
+  }
+
   ret.z = calcChecksum(&ret);
   Serial.write((char *)&ret,8);
 }
 
 void readMemory(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("readMemory");
   if (cmd->addr == 3) { // Max Position
     returnLong(65535,&ret);
   } else {
@@ -169,8 +166,6 @@ void readMemory(DreamFocuserCommand *cmd) {
 
 void getTemperature(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("getTemperature");
   long retHumidity = curHumidity * 10;
   retHumidity = retHumidity << 16;
   long retTemp = curTemp * 10;
@@ -184,11 +179,11 @@ void getTemperature(DreamFocuserCommand *cmd) {
 
 void move(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("move");
 
   long position = readLong(cmd);
   accelStepper.moveTo(position);
+  accelStepper.run();
+  destPos = position;
 
   Serial.write((char *)cmd,8);
 
@@ -196,19 +191,29 @@ void move(DreamFocuserCommand *cmd) {
 
 void stop(DreamFocuserCommand *cmd) {
   DreamFocuserCommand ret;
-  display.setCursor(0,20);
-  display.print("stop");
-
   accelStepper.stop();
+
+  destPos = accelStepper.currentPosition();
+
+  Serial.write((char *)cmd,8);
+
+}
+
+void sync(DreamFocuserCommand *cmd) {
+  DreamFocuserCommand ret;
+  if (accelStepper.isRunning()) {
+    accelStepper.stop();
+  }
+
+  long newPos = readLong(cmd);
+  accelStepper.setCurrentPosition(newPos);
+  destPos = accelStepper.currentPosition();
 
   Serial.write((char *)cmd,8);
 
 }
 
 void processCommand(DreamFocuserCommand *cmd) {
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
-  display.write(cmd->k);
   switch(cmd->k) 
   {
   case 'M': 
@@ -263,6 +268,7 @@ void processCommand(DreamFocuserCommand *cmd) {
       response - MW000d0z - d = 1: yes (absolute mode), 0: no (relative mode) */
     break;
   case 'Z':
+    sync(cmd);
     /* MZabcd0z - calibrate toposition x
       response - MZabcd0z */
     break;
@@ -274,22 +280,32 @@ void processCommand(DreamFocuserCommand *cmd) {
   default:
     break;
   }
+}
+
+void showStats() {
+  char printBuf[10];
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0,0);
+  display.print(" Cur Pos: ");
+  display.println(ltoa(accelStepper.currentPosition(),printBuf,10));
+  display.print("Dest Pos: ");
+  display.println(ltoa(destPos,printBuf,10));
+  
+
   display.display();
 }
 
 void loop() {
   DreamFocuserCommand cmd;
-  char printBuf[10];
+  showStats();
 
   // Check if any data is available in the serial receive buffer
   if (Serial.available() >0) {
-    display.clearDisplay();
     int read = Serial.readBytes((char *)&cmd,sizeof(DreamFocuserCommand));
-    display.setCursor(0,10);
-    display.print(itoa(read,printBuf,10));
     if (read == 8) {
       processCommand(&cmd);
     }
   }
-  display.display();
 }
